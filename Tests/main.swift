@@ -71,6 +71,54 @@ let r2 = deleter.delete(app: appB, period: .all)
 check(r2.deletedCount == 1, "AppB: удалён 1 файл при 'Удалить всё'")
 check(!fm.fileExists(atPath: root.appendingPathComponent("AppB/only.log").path), "AppB очищен")
 
+// --- SpeedTester: расчёт Мбит/с ---
+print("\n[Скорость]")
+check(SpeedTester.megabitsPerSecond(bytes: 12_500_000, seconds: 1) == 100,
+      "12.5 МБ за 1 c = 100 Мбит/с (получено \(SpeedTester.megabitsPerSecond(bytes: 12_500_000, seconds: 1)))")
+check(SpeedTester.megabitsPerSecond(bytes: 1_000_000, seconds: 0) == 0,
+      "Деление на ноль времени = 0 (без краха)")
+check(SpeedTester.megabitsPerSecond(bytes: 1_000_000, seconds: 8) == 1.0,
+      "1 МБ за 8 c = 1 Мбит/с (получено \(SpeedTester.megabitsPerSecond(bytes: 1_000_000, seconds: 8)))")
+
+// --- IPService: локальные адреса ---
+print("\n[IP]")
+let locals = IPService.localIPv4Addresses()
+check(!locals.contains("127.0.0.1"), "Локальный список не содержит loopback 127.0.0.1")
+print("  (для справки локальные адреса: \(locals))")
+
+// --- Логика подозрительности ---
+print("\n[Подозрительность]")
+check(SecurityInspector.suspicionReason(program: "/usr/bin/normalapp", exists: true) == nil,
+      "Обычная программа в /usr/bin — не подозрительна")
+check(SecurityInspector.suspicionReason(program: "/tmp/hack", exists: true) != nil,
+      "Запуск из /tmp — подозрительно")
+check(SecurityInspector.suspicionReason(program: "/Users/x/Downloads/x", exists: true) != nil,
+      "Запуск из Загрузок — подозрительно")
+check(SecurityInspector.suspicionReason(program: "/Users/x/.hidden/x", exists: true) != nil,
+      "Запуск из скрытой папки — подозрительно")
+check(SecurityInspector.suspicionReason(program: "/opt/app", exists: false) != nil,
+      "Программа отсутствует на диске — подозрительно")
+
+// --- SecurityInspector: чтение автозапуска из песочницы ---
+print("\n[Проверка автозапуска]")
+let secRoot = fm.temporaryDirectory.appendingPathComponent("sec_test_\(UUID().uuidString)")
+try? fm.createDirectory(at: secRoot, withIntermediateDirectories: true)
+let plist = """
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.test.agent</string>
+<key>ProgramArguments</key><array><string>/tmp/подозрительное</string></array>
+</dict></plist>
+"""
+try? plist.write(to: secRoot.appendingPathComponent("com.test.agent.plist"), atomically: true, encoding: .utf8)
+let inspector = SecurityInspector(searchPaths: [secRoot])
+let secItems = inspector.inspect()
+check(secItems.count == 1, "Найдена 1 запись автозапуска (получено \(secItems.count))")
+check(secItems.first?.program == "/tmp/подозрительное", "Программа автозапуска прочитана верно")
+check(secItems.first?.suspicion != nil, "Запись из /tmp помечена подозрительной")
+try? fm.removeItem(at: secRoot)
+
 // Убираем песочницу.
 try? fm.removeItem(at: root)
 

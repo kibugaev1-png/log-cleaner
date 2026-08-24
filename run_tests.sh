@@ -9,6 +9,9 @@ swiftc \
     Sources/ChistkaLogov/LogModels.swift \
     Sources/ChistkaLogov/LogScanner.swift \
     Sources/ChistkaLogov/LogDeleter.swift \
+    Sources/ChistkaLogov/IPService.swift \
+    Sources/ChistkaLogov/SpeedTester.swift \
+    Sources/ChistkaLogov/SecurityInspector.swift \
     Tests/main.swift \
     -o build/sandbox_test -sdk "$SDK" -target arm64-apple-macos13.0
 ./build/sandbox_test
