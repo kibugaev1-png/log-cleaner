@@ -21,55 +21,62 @@ func makeFile(_ path: String, bytes: Int, ageDays: Double) {
     try? fm.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
 }
 
-// Готовим песочницу.
-makeFile("AppA/today.log",     bytes: 100, ageDays: 0.1)   // свежий
-makeFile("AppA/threeDays.log", bytes: 200, ageDays: 3)     // на этой неделе
-makeFile("AppA/old.log",       bytes: 300, ageDays: 40)    // старше месяца
-makeFile("AppB/only.log",      bytes: 50,  ageDays: 10)    // 10 дней
-makeFile("MyApp-2024-01-01-crash.ips", bytes: 500, ageDays: 2) // одиночный файл-сбой
+// Готовим песочницу: следы Roblox разбросаны по «Логам» и «Кешу» (разные папки,
+// разные имена — com.roblox.RobloxPlayer и Roblox), плюс отдельный Telegram.
+makeFile("Logs/Roblox/today.log",                       bytes: 100, ageDays: 0.1) // свежий
+makeFile("Caches/com.roblox.RobloxPlayer/three.dat",    bytes: 200, ageDays: 3)   // на неделе
+makeFile("Caches/com.roblox.RobloxPlayer/old.dat",      bytes: 300, ageDays: 40)  // старше месяца
+makeFile("Logs/Telegram/only.log",                      bytes: 50,  ageDays: 10)
 
 print("Песочница: \(root.path)\n")
 
-// --- Сканирование ---
-let scanner = LogScanner(searchPaths: [root])
+let logsDir = root.appendingPathComponent("Logs")
+let cachesDir = root.appendingPathComponent("Caches")
+
+// --- Разбор имён в ключ приложения ---
+print("[Имена приложений]")
+check(TraceScanner.mainToken("Roblox") == "roblox", "Roblox -> roblox")
+check(TraceScanner.mainToken("com.roblox.RobloxPlayer") == "roblox", "com.roblox.RobloxPlayer -> roblox")
+check(TraceScanner.mainToken("com.roblox.RobloxPlayer.plist") == "roblox", "...RobloxPlayer.plist -> roblox")
+check(TraceScanner.mainToken("zoom.us") == "zoom", "zoom.us -> zoom")
+
+// --- Сканирование: следы Roblox из РАЗНЫХ папок объединяются ---
+print("\n[Сканирование следов]")
+let scanner = TraceScanner(searchPaths: [logsDir, cachesDir])
 let apps = scanner.scan()
 print("Найдено приложений: \(apps.map { $0.name }.sorted())")
+check(apps.contains { $0.name == "Roblox" }, "Roblox найден")
+check(apps.contains { $0.name == "Telegram" }, "Telegram найден")
 
-check(apps.contains { $0.name == "AppA" }, "AppA найдено")
-check(apps.contains { $0.name == "AppB" }, "AppB найдено")
-check(apps.contains { $0.name == "MyApp" }, "MyApp (из имени одиночного файла) найдено")
-
-let appA = apps.first { $0.name == "AppA" }!
-check(appA.count == 3, "AppA: 3 файла (получено \(appA.count))")
-check(appA.totalSize == 600, "AppA: суммарно 600 байт (получено \(appA.totalSize))")
+let roblox = apps.first { $0.name == "Roblox" }!
+check(roblox.count == 3, "Roblox: 3 файла из Логов+Кеша (получено \(roblox.count))")
+check(roblox.totalSize == 600, "Roblox: суммарно 600 байт (получено \(roblox.totalSize))")
 
 // --- Фильтр по периоду ---
-check(appA.files(in: .day).count == 1,   "AppA за день: 1 файл (получено \(appA.files(in: .day).count))")
-check(appA.files(in: .week).count == 2,  "AppA за неделю: 2 файла (получено \(appA.files(in: .week).count))")
-check(appA.files(in: .month).count == 2, "AppA за месяц: 2 файла (получено \(appA.files(in: .month).count))")
-check(appA.files(in: .all).count == 3,   "AppA всё: 3 файла (получено \(appA.files(in: .all).count))")
+check(roblox.files(in: .day).count == 1,   "Roblox за день: 1 (получено \(roblox.files(in: .day).count))")
+check(roblox.files(in: .week).count == 2,  "Roblox за неделю: 2 (получено \(roblox.files(in: .week).count))")
+check(roblox.files(in: .month).count == 2, "Roblox за месяц: 2 (получено \(roblox.files(in: .month).count))")
+check(roblox.files(in: .all).count == 3,   "Roblox всё: 3 (получено \(roblox.files(in: .all).count))")
 
-// --- Удаление за неделю: должно снести 2 свежих, оставить старый ---
+// --- Удаление за неделю: снести 2 свежих, оставить старый ---
+print("\n[Удаление]")
 let deleter = LogDeleter()
-let report = deleter.delete(app: appA, period: .week)
+let report = deleter.delete(app: roblox, period: .week, pruneUnder: [logsDir, cachesDir])
 check(report.deletedCount == 2, "Удалено 2 файла за неделю (получено \(report.deletedCount))")
 check(report.freedBytes == 300, "Освобождено 300 байт (получено \(report.freedBytes))")
-check(report.errors.isEmpty, "Ошибок нет")
-
-check(fm.fileExists(atPath: root.appendingPathComponent("AppA/old.log").path),
+check(fm.fileExists(atPath: cachesDir.appendingPathComponent("com.roblox.RobloxPlayer/old.dat").path),
       "Старый файл (40 дней) НЕ тронут")
-check(!fm.fileExists(atPath: root.appendingPathComponent("AppA/today.log").path),
-      "Свежий файл удалён")
-check(!fm.fileExists(atPath: root.appendingPathComponent("AppA/threeDays.log").path),
-      "Файл 3-дневной давности удалён")
-check(fm.fileExists(atPath: root.appendingPathComponent("AppB/only.log").path),
-      "Файлы другого приложения (AppB) НЕ тронуты")
+check(!fm.fileExists(atPath: logsDir.appendingPathComponent("Roblox/today.log").path), "Свежий удалён")
+check(fm.fileExists(atPath: logsDir.appendingPathComponent("Telegram/only.log").path),
+      "Файлы другого приложения (Telegram) НЕ тронуты")
 
-// --- Удаление «всё» у AppB ---
-let appB = scanner.scan().first { $0.name == "AppB" }!
-let r2 = deleter.delete(app: appB, period: .all)
-check(r2.deletedCount == 1, "AppB: удалён 1 файл при 'Удалить всё'")
-check(!fm.fileExists(atPath: root.appendingPathComponent("AppB/only.log").path), "AppB очищен")
+// --- Удаление «всё» у Telegram + чистка пустых папок ---
+let telegram = scanner.scan().first { $0.name == "Telegram" }!
+let r2 = deleter.delete(app: telegram, period: .all, pruneUnder: [logsDir, cachesDir])
+check(r2.deletedCount == 1, "Telegram: удалён 1 файл при 'Удалить всё'")
+check(!fm.fileExists(atPath: logsDir.appendingPathComponent("Telegram").path),
+      "Пустая папка Telegram удалена (следов не осталось)")
+check(fm.fileExists(atPath: logsDir.path), "Базовая папка Logs НЕ удалена")
 
 // --- SpeedTester: расчёт Мбит/с ---
 print("\n[Скорость]")

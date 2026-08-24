@@ -7,7 +7,7 @@ SDK=$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX15*.sdk 2>/dev/null |
 mkdir -p build
 swiftc \
     Sources/ChistkaLogov/LogModels.swift \
-    Sources/ChistkaLogov/LogScanner.swift \
+    Sources/ChistkaLogov/TraceScanner.swift \
     Sources/ChistkaLogov/LogDeleter.swift \
     Sources/ChistkaLogov/IPService.swift \
     Sources/ChistkaLogov/SpeedTester.swift \

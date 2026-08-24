@@ -13,7 +13,7 @@ final class AppModel: ObservableObject {
     @Published var showAll = false
 
     private let auth = AuthService()
-    private let scanner = LogScanner()
+    private let scanner = TraceScanner()
     private let lister = AppLister()
     let deleter = LogDeleter()
 
@@ -138,7 +138,7 @@ struct MenuView: View {
         VStack(spacing: 20) {
             Text("Что хотите сделать?").font(.system(size: 28, weight: .bold)).padding(.top, 30)
             VStack(spacing: 14) {
-                menuButton("1. Удаление логов", "trash", .green) { model.openLogs() }
+                menuButton("1. Очистка следов и логов", "trash", .green) { model.openLogs() }
                 menuButton("2. Мой IP-адрес", "network", Color(white: 0.9)) { model.phase = .ip }
                 menuButton("3. Подозрительные программы", "magnifyingglass", Color(white: 0.9)) { model.phase = .security }
                 menuButton("4. Скорость интернета", "speedometer", Color(white: 0.9)) { model.phase = .speed }
@@ -174,7 +174,7 @@ struct AppListView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 BackButton()
-                Text("Удаление логов").font(.system(size: 22, weight: .bold))
+                Text("Очистка следов").font(.system(size: 22, weight: .bold))
                 Spacer()
                 Toggle("Все приложения", isOn: $model.showAll).toggleStyle(.switch)
                 Button(action: { model.rescan() }) {
@@ -311,9 +311,10 @@ struct AppDetailView: View {
     }
     func performDelete() {
         guard let p = pending else { return }
-        lastReport = model.deleter.delete(app: current, period: p)
+        let scanner = TraceScanner()
+        lastReport = model.deleter.delete(app: current, period: p, pruneUnder: scanner.searchPaths)
         pending = nil
-        let fresh = LogScanner().scan().first { $0.name == current.name }
+        let fresh = scanner.scan().first { $0.name == current.name }
         current = fresh ?? AppLogs(name: current.name, files: [])
         model.rescan()
     }
