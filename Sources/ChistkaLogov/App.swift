@@ -1,6 +1,14 @@
 import SwiftUI
 
 // Состояние всего приложения.
+// Сводка для дашборда.
+struct DashboardStats {
+    var totalBytes: Int64 = 0
+    var appCount: Int = 0
+    var suspiciousCount: Int = 0
+    var topApps: [AppLogs] = []      // самые «тяжёлые» — для графика
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     enum Phase { case consent, menu, logs, ip, security, speed }
@@ -11,6 +19,10 @@ final class AppModel: ObservableObject {
     @Published var isScanning = false
     @Published var authError: String?
     @Published var showAll = false
+
+    @Published var stats: DashboardStats?
+    @Published var loadingStats = false
+    @Published var freedTotal: Int64 = 0     // сколько всего освобождено за сессию
 
     private let auth = AuthService()
     private let scanner = TraceScanner()
@@ -26,7 +38,27 @@ final class AppModel: ObservableObject {
         authError = nil
         auth.authenticate { [weak self] ok, err in
             guard let self else { return }
-            if ok { self.phase = .menu } else { self.authError = err }
+            if ok { self.phase = .menu; self.loadDashboard() } else { self.authError = err }
+        }
+    }
+
+    // Считает сводку для дашборда в фоне.
+    func loadDashboard() {
+        loadingStats = true
+        let scanner = self.scanner
+        DispatchQueue.global(qos: .userInitiated).async {
+            let apps = scanner.scan()
+            let withTraces = apps.filter { $0.count > 0 }
+            let total = withTraces.reduce(Int64(0)) { $0 + $1.totalSize }
+            let suspicious = SecurityInspector().inspect().filter { $0.suspicion != nil }.count
+            let top = Array(withTraces.prefix(6))
+            let s = DashboardStats(totalBytes: total, appCount: withTraces.count,
+                                   suspiciousCount: suspicious, topApps: top)
+            DispatchQueue.main.async {
+                self.apps = apps
+                self.stats = s
+                self.loadingStats = false
+            }
         }
     }
 
@@ -81,7 +113,7 @@ struct RootView: View {
             Color.white.ignoresSafeArea()
             switch model.phase {
             case .consent:  ConsentView()
-            case .menu:     MenuView()
+            case .menu:     DashboardView()
             case .logs:     AppListView()
             case .ip:       IPView()
             case .security: SecurityView()
@@ -130,37 +162,175 @@ struct ConsentView: View {
     }
 }
 
-// MARK: - Меню
+// MARK: - Дашборд
 
-struct MenuView: View {
+struct DashboardView: View {
     @EnvironmentObject var model: AppModel
+
     var body: some View {
-        VStack(spacing: 20) {
-            Text("Что хотите сделать?").font(.system(size: 28, weight: .bold)).padding(.top, 30)
-            VStack(spacing: 14) {
-                menuButton("1. Очистка следов и логов", "trash", .green) { model.openLogs() }
-                menuButton("2. Мой IP-адрес", "network", Color(white: 0.9)) { model.phase = .ip }
-                menuButton("3. Подозрительные программы", "magnifyingglass", Color(white: 0.9)) { model.phase = .security }
-                menuButton("4. Скорость интернета", "speedometer", Color(white: 0.9)) { model.phase = .speed }
+        ScrollView {
+            VStack(spacing: 22) {
+                HStack {
+                    Image(systemName: "sparkles").font(.title).foregroundColor(.blue)
+                    Text("Чистка логов").font(.system(size: 30, weight: .bold)).foregroundColor(.black)
+                    Spacer()
+                    Button(action: { model.loadDashboard() }) {
+                        Label("Обновить", systemImage: "arrow.clockwise").foregroundColor(.black)
+                    }
+                }
+                .padding(.top, 24)
+
+                // Карточки статистики
+                if let s = model.stats {
+                    HStack(spacing: 14) {
+                        StatCard(title: "Следов найдено", value: formatBytes(s.totalBytes),
+                                 icon: "internaldrive", color: Color(red: 0.1, green: 0.4, blue: 0.8))
+                        StatCard(title: "Приложений", value: "\(s.appCount)",
+                                 icon: "app.badge", color: Color(red: 0.1, green: 0.5, blue: 0.2))
+                        StatCard(title: "Подозрительных", value: "\(s.suspiciousCount)",
+                                 icon: "exclamationmark.shield",
+                                 color: s.suspiciousCount > 0 ? Color(red: 0.8, green: 0.1, blue: 0.1)
+                                                              : Color(red: 0.1, green: 0.5, blue: 0.2))
+                    }
+
+                    if model.freedTotal > 0 { freedBanner }
+
+                    // Мини-график «кто занимает больше всего места»
+                    if !s.topApps.isEmpty { SpaceChart(apps: s.topApps) }
+                } else if model.loadingStats {
+                    ProgressView("Анализирую компьютер…").padding(.vertical, 30)
+                }
+
+                // Действия
+                VStack(spacing: 12) {
+                    menuButton("Очистить следы и логи", "trash", Color(red: 0.1, green: 0.5, blue: 0.2), light: false) { model.openLogs() }
+                    HStack(spacing: 12) {
+                        smallButton("Мой IP", "network") { model.phase = .ip }
+                        smallButton("Проверка", "magnifyingglass") { model.phase = .security }
+                        smallButton("Скорость", "speedometer") { model.phase = .speed }
+                    }
+                }
+                Spacer(minLength: 10)
             }
-            .frame(maxWidth: 440)
-            Spacer()
-        }.padding(30)
+            .padding(.horizontal, 30)
+            .frame(maxWidth: 620)
+            .frame(maxWidth: .infinity)
+        }
+        .onAppear { if model.stats == nil && !model.loadingStats { model.loadDashboard() } }
     }
 
-    func menuButton(_ title: String, _ icon: String, _ bg: Color, action: @escaping () -> Void) -> some View {
+    var freedBanner: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "checkmark.seal.fill").font(.title).foregroundColor(.green)
+            VStack(alignment: .leading) {
+                Text("Освобождено за сессию").font(.caption).foregroundColor(.black.opacity(0.6))
+                CountUpBytes(target: model.freedTotal)
+                    .font(.system(size: 26, weight: .bold)).foregroundColor(.green)
+            }
+            Spacer()
+        }
+        .padding().background(Color.green.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    func menuButton(_ title: String, _ icon: String, _ bg: Color, light: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 14) {
-                Image(systemName: icon).font(.title3).foregroundColor(.black).frame(width: 28)
-                Text(title).font(.headline).foregroundColor(.black)
+                Image(systemName: icon).font(.title3).foregroundColor(light ? .black : .white).frame(width: 28)
+                Text(title).font(.headline).foregroundColor(light ? .black : .white)
                 Spacer()
-                Image(systemName: "chevron.right").foregroundColor(.black.opacity(0.4))
+                Image(systemName: "chevron.right").foregroundColor((light ? Color.black : .white).opacity(0.5))
             }
-            .padding(.horizontal, 18).padding(.vertical, 16)
+            .padding(.horizontal, 18).padding(.vertical, 18)
             .frame(maxWidth: .infinity)
             .background(bg)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
         }.buttonStyle(.plain)
+    }
+
+    func smallButton(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 8) {
+                Image(systemName: icon).font(.title2).foregroundColor(.black)
+                Text(title).font(.subheadline.weight(.medium)).foregroundColor(.black)
+            }
+            .frame(maxWidth: .infinity).padding(.vertical, 16)
+            .background(Color(white: 0.94))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+        }.buttonStyle(.plain)
+    }
+}
+
+// Карточка одной цифры.
+struct StatCard: View {
+    let title: String; let value: String; let icon: String; let color: Color
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Image(systemName: icon).font(.title2).foregroundColor(color)
+            Text(value).font(.system(size: 26, weight: .bold)).foregroundColor(color).lineLimit(1)
+            Text(title).font(.caption).foregroundColor(.black.opacity(0.6))
+        }
+        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        .background(color.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+// Горизонтальный мини-график «кто занимает место».
+struct SpaceChart: View {
+    let apps: [AppLogs]
+    var maxBytes: Int64 { max(1, apps.map { $0.totalSize }.max() ?? 1) }
+    let palette: [Color] = [
+        Color(red: 0.20, green: 0.45, blue: 0.85), Color(red: 0.85, green: 0.45, blue: 0.15),
+        Color(red: 0.20, green: 0.60, blue: 0.35), Color(red: 0.60, green: 0.30, blue: 0.70),
+        Color(red: 0.85, green: 0.30, blue: 0.45), Color(red: 0.30, green: 0.60, blue: 0.70)
+    ]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Кто занимает больше всего места").font(.headline).foregroundColor(.black)
+            ForEach(Array(apps.enumerated()), id: \.element.id) { i, app in
+                HStack(spacing: 10) {
+                    Text(app.name).font(.caption).foregroundColor(.black)
+                        .frame(width: 90, alignment: .leading).lineLimit(1)
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 6).fill(Color(white: 0.92))
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(palette[i % palette.count])
+                                .frame(width: max(6, geo.size.width * barFraction(app)))
+                        }
+                    }.frame(height: 22)
+                    Text(formatBytes(app.totalSize)).font(.caption2).foregroundColor(.black.opacity(0.7))
+                        .frame(width: 70, alignment: .trailing)
+                }
+            }
+        }
+        .padding(16).frame(maxWidth: .infinity)
+        .background(Color(white: 0.97)).clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+    func barFraction(_ app: AppLogs) -> CGFloat {
+        CGFloat(Double(app.totalSize) / Double(maxBytes))
+    }
+}
+
+// Анимированный счётчик байтов (счёт вверх).
+struct CountUpBytes: View {
+    let target: Int64
+    @State private var shown: Int64 = 0
+    var body: some View {
+        Text(formatBytes(shown))
+            .onAppear { run() }
+            .onChange(of: target) { _ in run() }
+    }
+    func run() {
+        shown = 0
+        guard target > 0 else { return }
+        let steps: Int64 = 25
+        let inc = max(1, target / steps)
+        Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { t in
+            shown += inc
+            if shown >= target { shown = target; t.invalidate() }
+        }
     }
 }
 
@@ -312,11 +482,14 @@ struct AppDetailView: View {
     func performDelete() {
         guard let p = pending else { return }
         let scanner = TraceScanner()
-        lastReport = model.deleter.delete(app: current, period: p, pruneUnder: scanner.searchPaths)
+        let report = model.deleter.delete(app: current, period: p, pruneUnder: scanner.searchPaths)
+        lastReport = report
+        model.freedTotal += report.freedBytes
         pending = nil
         let fresh = scanner.scan().first { $0.name == current.name }
         current = fresh ?? AppLogs(name: current.name, files: [])
         model.rescan()
+        model.loadDashboard()
     }
     func dateStr(_ d: Date) -> String {
         let f = DateFormatter(); f.dateStyle = .short; return f.string(from: d)
